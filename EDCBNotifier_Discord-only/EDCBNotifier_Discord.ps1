@@ -14,7 +14,6 @@ if (-not (Test-Path -LiteralPath $configPath)) {
 $Config = Import-PowerShellDataFile -LiteralPath $configPath
 
 # 各変数へ展開
-$DEBUG                  = $Config.DEBUG
 $DISCORD_WEBHOOK_URL    = $Config.DISCORD_WEBHOOK_URL
 $WEBHOOK_ADD_RESERVE    = $Config.WEBHOOK_ADD_RESERVE
 $WEBHOOK_CHG_RESERVE    = $Config.WEBHOOK_CHG_RESERVE
