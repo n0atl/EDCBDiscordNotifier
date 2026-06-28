@@ -15,18 +15,9 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
 * EPGロゴ表示
   * 放送局ごとのカスタム絵文字表示
 
-<<<<<<< HEAD
 * 録画結果の可視化
   * Drop / Scramble数表示
   * TSファイルサイズ表示
-=======
-  * EPG更新などによる予約変更時に、変更前と変更後の情報を表示
-* EPGロゴ表示
-  * EPGロゴをカスタム絵文字として表示
-
-  * Drop発生時や空き容量低下時に警告表示
-  * 録画ファイルサイズの計測
->>>>>>> 660027b1c1d122a92ca0ecc763d03cfcd6b81573
   * 保存先ドライブの空き容量表示
   * 空き容量不足時の警告表示
   * program.txtから番組概要を引用表示
@@ -133,11 +124,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 
 # フィルタ設定
 
-<<<<<<< HEAD
 `config.psd1`以下のフィルタを設定できます。
-=======
-`config.psd1` 内で以下のフィルタを設定できます。
->>>>>>> 660027b1c1d122a92ca0ecc763d03cfcd6b81573
 
 * 通知を許可する放送局名
 * 通知を許可する番組名
