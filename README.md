@@ -63,7 +63,7 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
 
 Discord Webhook URL
 
-イベントごとに通知チャンネルを分けたい場合は、以下の設定に個別のWebhook URLを指定してください。
+イベントごとに通知チャンネルを分けたい場合は、個別のWebhook URLを指定してください。
 
 ### EPGロゴ絵文字（任意）
 
