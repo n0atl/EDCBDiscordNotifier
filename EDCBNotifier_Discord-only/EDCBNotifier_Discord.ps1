@@ -298,7 +298,10 @@ function Test-NeedAlertMention {
 function Debug-Print {
     param([string]$Text)
     
-    if ($DEBUG) {
+    # $DEBUG が未定義の場合は $true（デバッグ有効）として扱う
+    $isDebug = if ($null -ne $DEBUG) { $DEBUG } else { $true }
+    
+    if ($isDebug) {
         Write-Host $Text -ForegroundColor DarkGray
     }
 }
@@ -370,7 +373,7 @@ if ($IsFromEDCB) {
     Debug-Print "✅フィルタ通過"
 }
 else {
-    Debug-Print "🛠️EDCB以外からの実行（デバッグモード）"
+    Debug-Print "🛠️EDCB以外からの実行"
 }
 
 
