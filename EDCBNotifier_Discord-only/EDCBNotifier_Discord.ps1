@@ -24,6 +24,9 @@ $DISCORD_USERNAME       = $Config.DISCORD_USERNAME
 $DISCORD_AVATAR         = $Config.DISCORD_AVATAR
 $ENABLE_DRIVE_INFO      = $Config.ENABLE_DRIVE_INFO
 $ENABLE_DRIVE_ALERT     = $Config.ENABLE_DRIVE_ALERT
+$ENABLE_DROP_MENTION  = $Config.ENABLE_DROP_MENTION
+$ENABLE_ERROR_MENTION = $Config.ENABLE_ERROR_MENTION
+$ALERT_MENTION        = $Config.ALERT_MENTION
 
 # PSD1側で「100GB」と書いたデータがそのまま実バイト数として入ります
 $DRIVE_ALERT_THRESHOLD  = $Config.DRIVE_ALERT_THRESHOLD
@@ -255,6 +258,41 @@ function Get-ProgramSummary {
 }
 # =========================
 
+# 録画失敗時にメンション 26.06.28
+function Test-NeedAlertMention {
+    param(
+        [int]$DropCount,
+        [string]$Result,
+        [string]$FileStatus
+    )
+
+    # Drop
+    if ($ENABLE_DROP_MENTION -and $DropCount -gt 0) {
+        return $true
+    }
+
+    # 0Byte
+    if ($ENABLE_ERROR_MENTION -and $FileStatus -eq "ZERO") {
+        return $true
+    }
+
+    # EDCBエラー
+    if ($ENABLE_ERROR_MENTION) {
+
+        $errorResults = @(
+            "録画開始処理に失敗しました",
+            "チューナーのオープンに失敗しました",
+            "ファイル保存で致命的なエラーが発生した可能性があります"
+        )
+
+        if ($errorResults -contains $Result) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 
 # =========================
 # メイン
@@ -485,6 +523,13 @@ switch ($mode) {
 		}
         # 最終メッセージ展開
         $message = $ExecutionContext.InvokeCommand.ExpandString($Config.TEMPLATE_REC_END)
+		$mention = ""
+
+		if ($ALERT_MENTION -and
+			(Test-NeedAlertMention $dropCount $result $fs.Status))
+		{
+			$mention = "$ALERT_MENTION "
+		}
     }
 }
 
@@ -512,10 +557,14 @@ if (-not $targetWebhook) {
 # Discord送信
 # =========================
 
+$content = $message
+if ($mention) {
+    $content = $mention + $message
+}
 $payload = @{
     username   = $DISCORD_USERNAME
     avatar_url = $DISCORD_AVATAR
-    content    = $message
+    content    = $content
 } | ConvertTo-Json -Depth 5 -Compress
 
 Invoke-RestMethod `

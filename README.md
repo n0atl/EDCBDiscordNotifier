@@ -1,7 +1,7 @@
-# EDCBNotifier Discord only (PowerShell版)
+# EDCBDiscordNotifier (PowerShell版)
 
 EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製のツールです。
-
+<img src="https://github.com/user-attachments/assets/414e0e1e-edcd-4f7a-82aa-871946110d93" width="500" alt="通知イメージ">
 ## 主な機能
 
 * イベント通知
@@ -11,19 +11,29 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
   * 録画開始
   * 録画終了
 * 予約変更検知
+  * EPG更新などによる予約変更時に変更前・変更後を表示
+* EPGロゴ表示
+  * 放送局ごとのカスタム絵文字表示
 
+<<<<<<< HEAD
+* 録画結果の可視化
+  * Drop / Scramble数表示
+  * TSファイルサイズ表示
+=======
   * EPG更新などによる予約変更時に、変更前と変更後の情報を表示
-* 放送局アイコン対応
+* EPGロゴ表示
+  * EPGロゴをカスタム絵文字として表示
 
-  * 放送局名に応じたカスタム絵文字を表示
-* ステータス可視化
-
-  * ネットワーク種別（地デジ / BS / CS / CATV など）の自動判定
   * Drop発生時や空き容量低下時に警告表示
   * 録画ファイルサイズの計測
+>>>>>>> 660027b1c1d122a92ca0ecc763d03cfcd6b81573
   * 保存先ドライブの空き容量表示
-  * `program.txt` から番組概要を抽出して引用投稿
+  * 空き容量不足時の警告表示
+  * program.txtから番組概要を引用表示
+  * 録画失敗時・Drop発生時のメンション通知（設定可能）
+
 * フィルタリング
+  * 放送局名・番組名による許可/拒否リスト
 
   * 放送局名・番組名による許可/拒否リストに対応
 
@@ -60,20 +70,17 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
 
 ## 2. 本体設定
 
-`EDCBNotifier_Discord.ps1` をテキストエディタで開き、冒頭の設定項目を環境に合わせて編集してください。
+`config.psd1` をテキストエディタで開き、設定項目を環境に合わせて編集してください。
 
 ### 必須設定
 
 Discord Webhook URL
 
-イベントごとに通知チャンネルを分けたい場合は、以下の設定に個別のWebhook URLを指定してください。
+イベントごとに通知チャンネルを分けたい場合は、個別のWebhook URLを指定してください。
 
-* `$WEBHOOK_REC_END`
-* その他イベント用Webhook
+### EPGロゴ絵文字（任意）
 
-### 放送局アイコン（任意）
-
-`Get-ServiceEmoji` 関数内へ、ご自身の環境で受信可能な放送局名と絵文字IDを追加してください。
+`DTVlogo.json` 内に、ご自身の環境で受信可能な放送局名と絵文字IDを追加してください。
 
 ---
 
@@ -110,7 +117,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 
 ## 共通
 
-* 放送局名（ネットワーク種別付き）
+* 放送局名
 * 番組名
 * 放送日時
 
@@ -119,12 +126,18 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 * Drop / Scramble数
 * TSファイルサイズ
 * 録画保存先ドライブの空き容量
+* 録画結果コメント（録画失敗・キャンセルなど）
+* 番組概要（program.txtが存在する場合）
 
 ---
 
 # フィルタ設定
 
-`EDCBNotifier_Discord.ps1` 内で以下のフィルタを設定できます。
+<<<<<<< HEAD
+`config.psd1`以下のフィルタを設定できます。
+=======
+`config.psd1` 内で以下のフィルタを設定できます。
+>>>>>>> 660027b1c1d122a92ca0ecc763d03cfcd6b81573
 
 * 通知を許可する放送局名
 * 通知を許可する番組名
@@ -138,9 +151,14 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 ## 設定例
 
 ```powershell
-$ALLOW_SERVICES = @("ＮＨＫ", "ＴＢＳ")
-$DENY_TITLES    = @("通販")
+ALLOW_SERVICES = @("ＮＨＫ", "ＴＢＳ")
+DENY_TITLES    = @("通販")
 ```
+## メンション通知
+`config.psd1`で個別に設定できます。
+* Drop発生時のみメンション
+* 録画失敗・EDCBエラー時のみメンション
+
 
 ---
 
