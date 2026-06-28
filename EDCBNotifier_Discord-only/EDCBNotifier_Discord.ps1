@@ -292,7 +292,16 @@ function Test-NeedAlertMention {
     return $false
 }
 
-
+# =========================
+# デバッグ出力関数
+# =========================
+function Debug-Print {
+    param([string]$Text)
+    
+    if ($DEBUG) {
+        Write-Host $Text -ForegroundColor DarkGray
+    }
+}
 # =========================
 # メイン
 # =========================
