@@ -1,7 +1,7 @@
 # EDCBNotifier Discord only (PowerShell版)
 
 EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製のツールです。
-
+<img src="https://github.com/user-attachments/assets/414e0e1e-edcd-4f7a-82aa-871946110d93" width="500" alt="通知イメージ">
 ## 主な機能
 
 * イベント通知
@@ -13,10 +13,23 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
 * 予約変更検知
 
   * EPG更新などによる予約変更時に、変更前と変更後の情報を表示
-* 放送局アイコン対応
 
-  * 放送局名に応じたカスタム絵文字を表示
-* ステータス可視化
+* EPGロゴ表示
+
+  * 放送局に応じたDiscordのカスタム絵文字を用意
+  * 絵文字の対応は `DTVlogo.json` で管理しています。
+  * 局ロゴの変更や絵文字IDを変更する場合は、`DTVlogo.json` を編集してください。
+
+  例：
+
+  ```json
+  {
+    "ＢＳ日テレ": "<:bs4:939138806450376754>",
+    "ＢＳ朝日": "<:bs5:939139008263503932>",
+    "ＢＳ－ＴＢＳ": "<:bs6:939139170335612968>"
+  }
+  ```
+
 
   * ネットワーク種別（地デジ / BS / CS / CATV など）の自動判定
   * Drop発生時や空き容量低下時に警告表示
