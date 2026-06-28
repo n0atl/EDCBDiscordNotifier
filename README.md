@@ -13,25 +13,9 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
 * 予約変更検知
 
   * EPG更新などによる予約変更時に、変更前と変更後の情報を表示
-
 * EPGロゴ表示
+  * EPGロゴをカスタム絵文字として表示
 
-  * 放送局に応じたDiscordのカスタム絵文字を用意
-  * 絵文字の対応は `DTVlogo.json` で管理しています。
-  * 局ロゴの変更や絵文字IDを変更する場合は、`DTVlogo.json` を編集してください。
-
-  例：
-
-  ```json
-  {
-    "ＢＳ日テレ": "<:bs4:939138806450376754>",
-    "ＢＳ朝日": "<:bs5:939139008263503932>",
-    "ＢＳ－ＴＢＳ": "<:bs6:939139170335612968>"
-  }
-  ```
-
-
-  * ネットワーク種別（地デジ / BS / CS / CATV など）の自動判定
   * Drop発生時や空き容量低下時に警告表示
   * 録画ファイルサイズの計測
   * 保存先ドライブの空き容量表示
@@ -73,7 +57,7 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
 
 ## 2. 本体設定
 
-`EDCBNotifier_Discord.ps1` をテキストエディタで開き、冒頭の設定項目を環境に合わせて編集してください。
+`config.psd1` をテキストエディタで開き、設定項目を環境に合わせて編集してください。
 
 ### 必須設定
 
@@ -81,12 +65,9 @@ Discord Webhook URL
 
 イベントごとに通知チャンネルを分けたい場合は、以下の設定に個別のWebhook URLを指定してください。
 
-* `$WEBHOOK_REC_END`
-* その他イベント用Webhook
+### EPGロゴ絵文字（任意）
 
-### 放送局アイコン（任意）
-
-`Get-ServiceEmoji` 関数内へ、ご自身の環境で受信可能な放送局名と絵文字IDを追加してください。
+`DTVlogo.json` 内に、ご自身の環境で受信可能な放送局名と絵文字IDを追加してください。
 
 ---
 
@@ -123,7 +104,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 
 ## 共通
 
-* 放送局名（ネットワーク種別付き）
+* 放送局名
 * 番組名
 * 放送日時
 
@@ -137,7 +118,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 
 # フィルタ設定
 
-`EDCBNotifier_Discord.ps1` 内で以下のフィルタを設定できます。
+`config.psd1` 内で以下のフィルタを設定できます。
 
 * 通知を許可する放送局名
 * 通知を許可する番組名
@@ -151,8 +132,8 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 ## 設定例
 
 ```powershell
-$ALLOW_SERVICES = @("ＮＨＫ", "ＴＢＳ")
-$DENY_TITLES    = @("通販")
+ALLOW_SERVICES = @("ＮＨＫ", "ＴＢＳ")
+DENY_TITLES    = @("通販")
 ```
 
 ---
