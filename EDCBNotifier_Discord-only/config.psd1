@@ -42,7 +42,7 @@ ALLOW_SERVICES = @()
 # 通知を許可する番組名
 ALLOW_TITLES　= @()
 # 通知させない放送局(サービス名) (例; @("ＮＨＫＥテレ") )
-DENY_SERVICES　= @("")
+DENY_SERVICES　= @()
 # 通知させない番組名
 DENY_TITLES　= @()
 	

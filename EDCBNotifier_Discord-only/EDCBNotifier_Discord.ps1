@@ -25,7 +25,11 @@ $ENABLE_DRIVE_INFO      = $Config.ENABLE_DRIVE_INFO
 $ENABLE_DRIVE_ALERT     = $Config.ENABLE_DRIVE_ALERT
 $ENABLE_DROP_MENTION  = $Config.ENABLE_DROP_MENTION
 $ENABLE_ERROR_MENTION = $Config.ENABLE_ERROR_MENTION
-$ALERT_MENTION        = $Config.ALERT_MENTION
+# メンション先 (config.psd1 の MENTION_ID。旧名 ALERT_MENTION にも対応)
+$ALERT_MENTION        = $Config.MENTION_ID
+if (-not $ALERT_MENTION) { $ALERT_MENTION = $Config.ALERT_MENTION }
+# 未記入のサンプル値 "<@>" などはメンション無しとして扱う
+if ($ALERT_MENTION -match '^\s*<@[!&]?>\s*$') { $ALERT_MENTION = "" }
 
 # PSD1側で「100GB」と書いたデータがそのまま実バイト数として入ります
 $DRIVE_ALERT_THRESHOLD  = $Config.DRIVE_ALERT_THRESHOLD
@@ -109,7 +113,9 @@ function Test-DenyByKeyword {
     )
 
     if (-not $Target) { return $false }
-    if (-not $Keywords -or $Keywords.Count -eq 0) {
+    # 空文字・空白だけのキーワードは無視 ("**" が全てに一致してしまうため)
+    $Keywords = @($Keywords | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($Keywords.Count -eq 0) {
         return $false   # 未指定＝拒否しない
     }
 
@@ -128,7 +134,9 @@ function Test-AllowByKeyword {
     )
 
     if (-not $Target) { return $true }
-    if (-not $Keywords -or $Keywords.Count -eq 0) {
+    # 空文字・空白だけのキーワードは無視
+    $Keywords = @($Keywords | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($Keywords.Count -eq 0) {
         return $true    # 未指定＝全許可
     }
 
