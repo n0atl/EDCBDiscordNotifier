@@ -12,11 +12,6 @@ WEBHOOK_REC_END　= ""
 DISCORD_USERNAME = "EDCBNotifier"
 DISCORD_AVATAR　= "https://raw.githubusercontent.com/EMWUI/EDCB_Material_WebUI/master/HttpPublic/EMWUI/img/android-chrome-192x192.png"
 
-# --- 空き容量表示・警告設定 ---
-ENABLE_DRIVE_INFO  = $true		# 容量情報自体を表示するか ($true = する / $false = しない)
-ENABLE_DRIVE_ALERT = $true		# 警告絵文字を表示するか ($true = する / $false = しない)
-DRIVE_ALERT_THRESHOLD = 100GB	# 警告を出す残り容量 (例: 100GB, 50GB, 1TB)
-
 # --- メンション設定 ---
 # Drop数が1以上の録画終了時にメンションする
 ENABLE_DROP_MENTION = $true
@@ -48,10 +43,10 @@ DENY_TITLES　= @()
 	
 # --- メッセージテンプレート設定 ---
 
-# 利用可能な主な変数: $discord_emoji, $service, $NWN, $recCommentText, $startDate, $SDW, $startTime, $endTime, $title
+# 利用可能な主な変数: $service, $NWN, $recCommentText, $startDate, $SDW, $startTime, $endTime, $title
 # 予約追加
 ADD_RESERVE = @'
-📌 **予約追加** 【$discord_emoji$service$NWN】$recCommentText
+📌 **予約追加** 【$service$NWN】$recCommentText
 > $startDate($SDW) $startTime～$endTime
 > $title
 '@
@@ -60,7 +55,7 @@ ADD_RESERVE = @'
  # 予約変更時のみ利用可能な変数: $title_old, $timeOldText, $timeNewText
 # 予約変更 (番組名のみ)
 TEMPLATE_CHG_TITLE = @'
-🔄**予約変更** 【$discord_emoji$service$NWN】$recCommentText
+🔄**予約変更** 【$service$NWN】$recCommentText
 番組名が変更されました。
 > $startDate($SDW) $startTime～$endTime
 > [変更前]$title_old
@@ -71,7 +66,7 @@ TEMPLATE_CHG_TITLE = @'
 
 # 予約変更 (時間のみ)
 TEMPLATE_CHG_TIME = @'
-🔄**予約変更** 【$discord_emoji$service$NWN】$recCommentText
+🔄**予約変更** 【$service$NWN】$recCommentText
 放送時間が変更されました。
 > $title
 > [変更前]$timeOldText
@@ -82,7 +77,7 @@ TEMPLATE_CHG_TIME = @'
 
 # 予約変更 (番組名と時間両方)
 TEMPLATE_CHG_BOTH = @'
-🔄**予約変更** 【$discord_emoji$service$NWN】$recCommentText
+🔄**予約変更** 【$service$NWN】$recCommentText
 番組情報が変更されました。
 > [変更前]$title_old
 > [変更後]$title
@@ -94,18 +89,18 @@ TEMPLATE_CHG_BOTH = @'
 
 # 録画開始
 TEMPLATE_REC_START = @'
-🔴 **録画開始** 【$discord_emoji$service$NWN】$recCommentText
+🔴 **録画開始** 【$service$NWN】$recCommentText
 > $startDate($SDW) $startTime～$endTime
 > $title
 '@
 # ------------------
 
-# 録画終了時のみ利用可能な変数: $dropsIcon, $resultMain, $quotedSummary, $drops, $scrambles, $sizeText, $driveSpace, $commentText
+# 録画終了時のみ利用可能な変数: $dropsIcon, $resultMain, $drops, $scrambles, $sizeText, $commentText
 # 録画終了
 TEMPLATE_REC_END = @'
-$dropsIcon**$resultMain** 【$discord_emoji$service$NWN】$recCommentText
+$dropsIcon**$resultMain** 【$service$NWN】$recCommentText
 > $startDate($SDW) $startTime～$endTime
-> $title$quotedSummary
-> Drop:**$drops** Scramble:**$scrambles** TS:**$sizeText**$driveSpace$commentText
+> $title
+> Drop:**$drops** Scramble:**$scrambles** TS:**$sizeText**$commentText
 '@
 }

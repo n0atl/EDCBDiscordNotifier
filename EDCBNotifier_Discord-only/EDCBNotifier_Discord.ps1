@@ -1,4 +1,5 @@
 ﻿[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+# EDCBDiscordNotifier シンプル版 (局ロゴ・空き容量・番組概要の表示はありません)
 $PSDefaultParameterValues['ConvertTo-Json:Encoding'] = 'utf8'
 $IsFromEDCB = $env:ServiceName -or $env:Title -or $env:FilePath
 
@@ -21,8 +22,6 @@ $WEBHOOK_REC_START      = $Config.WEBHOOK_REC_START
 $WEBHOOK_REC_END        = $Config.WEBHOOK_REC_END
 $DISCORD_USERNAME       = $Config.DISCORD_USERNAME
 $DISCORD_AVATAR         = $Config.DISCORD_AVATAR
-$ENABLE_DRIVE_INFO      = $Config.ENABLE_DRIVE_INFO
-$ENABLE_DRIVE_ALERT     = $Config.ENABLE_DRIVE_ALERT
 $ENABLE_DROP_MENTION  = $Config.ENABLE_DROP_MENTION
 $ENABLE_ERROR_MENTION = $Config.ENABLE_ERROR_MENTION
 # メンション先 (config.psd1 の MENTION_ID。旧名 ALERT_MENTION にも対応)
@@ -30,9 +29,6 @@ $ALERT_MENTION        = $Config.MENTION_ID
 if (-not $ALERT_MENTION) { $ALERT_MENTION = $Config.ALERT_MENTION }
 # 未記入のサンプル値 "<@>" などはメンション無しとして扱う
 if ($ALERT_MENTION -match '^\s*<@[!&]?>\s*$') { $ALERT_MENTION = "" }
-
-# PSD1側で「100GB」と書いたデータがそのまま実バイト数として入ります
-$DRIVE_ALERT_THRESHOLD  = $Config.DRIVE_ALERT_THRESHOLD
 
 # 配列オブジェクトの変換（明示的に型を固定）
 $ALLOW_SERVICES         = [string[]]$Config.ALLOW_SERVICES
@@ -45,154 +41,6 @@ $DENY_TITLES            = [string[]]$Config.DENY_TITLES
 # =========================
 # 共通関数
 # =========================
-# 局ロゴ追加 26.02.14
-# 局ロゴ追加 26.06.27 JSON外部参照方式に変更
-# 局ロゴ判定 26.11.14 ONID-SID のキーと、局名の最長一致に対応
-# =========================
-# DTVlogo.json の書き方は README の「局ロゴ絵文字」を参照
-#   局名は 全角/半角、大文字/小文字、空白の数、ダッシュ・波ダッシュの種類 の違いを無視して比較する
-#   判定の優先順位: 1. "ONID-SID" のキー  2. 局名のキー (一番長く一致したもの。その中で "sid" に今の SID があればそれを使う)
-
-function ConvertTo-DTVLogoKey {
-    # 比較用に正規化 (NFKC で全角英数→半角、連続する空白は1つに)
-    # 空白を消すと「TBS NEWS」が「BSN」に一致するなど誤判定が出るので、空白は残す
-    # ダッシュ類 (－ − ‐ など) と 波ダッシュ類 (～ 〜) は、コピーや文字コード変換で入れ替わりやすいので同じ文字として扱う
-    param([string]$Text)
-    if (-not $Text) { return "" }
-    $t = $Text.Normalize([Text.NormalizationForm]::FormKC)
-    $t = $t -replace '[‐-―−﹣－]', '-' -replace '[〜～∼]', '~'
-    return ($t -replace '\s+', ' ').Trim()
-}
-
-function Test-DTVLogoIdKey {
-    # "ONID-SID" の形のキーか
-    param([string]$Key)
-    return ($Key -match '^\d+-\d+$')
-}
-
-function New-DTVLogoValue {
-    # 値 (絵文字と、SID ごとの例外) を作る
-    param([string]$Emoji = "", $Sid = $null)
-    $v = @{ emoji = $Emoji; sid = [ordered]@{} }
-    if ($Sid) { foreach ($k in $Sid.Keys) { $v.sid["$k"] = [string]$Sid[$k] } }
-    return $v
-}
-
-function Import-DTVLogoMap {
-    # DTVlogo.json を読み込み、順序付きハッシュテーブル (キー → @{ emoji; sid }) で返す
-    param([string]$Path)
-    $map = [ordered]@{}
-    if (-not (Test-Path -LiteralPath $Path)) { return $map }
-    $json = Get-Content -LiteralPath $Path -Raw -Encoding utf8 | ConvertFrom-Json
-    foreach ($p in $json.psobject.Properties) {
-        $val = $p.Value
-        if ($val -is [string] -or $null -eq $val) {
-            $map[$p.Name] = New-DTVLogoValue -Emoji ([string]$val)
-        } else {
-            $sid = [ordered]@{}
-            if ($val.sid) { foreach ($s in $val.sid.psobject.Properties) { $sid[$s.Name] = [string]$s.Value } }
-            $map[$p.Name] = New-DTVLogoValue -Emoji ([string]$val.emoji) -Sid $sid
-        }
-    }
-    return $map
-}
-
-function Find-DTVLogo {
-    # 一番条件に合うキーを返す。無ければ $null
-    # 戻り値: @{ Key; Emoji; Kind ("id" / "name" / "name+sid") }
-    param(
-        $Map,
-        [string]$Onid,
-        [string]$Sid,
-        [string]$ServiceName
-    )
-    [int]$onidInt = -1
-    [int]$sidInt = -1
-    $hasOnid = [int]::TryParse($Onid, [ref]$onidInt)
-    $hasSid = [int]::TryParse($Sid, [ref]$sidInt)
-
-    if ($hasOnid -and $hasSid -and $Map.Contains("$onidInt-$sidInt")) {
-        return @{ Key = "$onidInt-$sidInt"; Emoji = $Map["$onidInt-$sidInt"].emoji; Kind = "id" }
-    }
-
-    $nameKey = ConvertTo-DTVLogoKey $ServiceName
-    if (-not $nameKey) { return $null }
-    $best = $null
-    $bestLen = 0
-    foreach ($k in $Map.Keys) {
-        if (Test-DTVLogoIdKey $k) { continue }
-        $mk = ConvertTo-DTVLogoKey $k
-        if ($mk -and $mk.Length -gt $bestLen -and $nameKey.IndexOf($mk, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            $best = $k
-            $bestLen = $mk.Length
-        }
-    }
-    if ($null -eq $best) { return $null }
-    $v = $Map[$best]
-    if ($hasSid -and $v.sid.Contains("$sidInt")) {
-        return @{ Key = $best; Emoji = $v.sid["$sidInt"]; Kind = "name+sid" }
-    }
-    return @{ Key = $best; Emoji = $v.emoji; Kind = "name" }
-}
-
-function Get-ServiceEmoji {
-    param([string]$ServiceName, [string]$Onid, [string]$Sid)
-    $jsonPath = Join-Path $PSScriptRoot "DTVlogo.json"
-    try {
-        $map = Import-DTVLogoMap -Path $jsonPath
-        $hit = Find-DTVLogo -Map $map -Onid $Onid -Sid $Sid -ServiceName $ServiceName
-        if ($hit) {
-            Debug-Print "Logo      : $($hit.Key) ($($hit.Kind))"
-            return $hit.Emoji
-        }
-    } catch {
-        Debug-Print "Logo      : DTVlogo.json の読み込みに失敗 $($_.Exception.Message)"
-    }
-    return ""
-}
-# =========================
-
-function Get-DriveSpaceText {
-    param($Path)
-	# 表示設定が false なら何も返さない
-    if (-not $ENABLE_DRIVE_INFO) { return "" }
-    
-    if (-not $Path) { return "" }
-	
-    try {
-        $driveLetter = Split-Path -Path $Path -Qualifier
-        if (-not $driveLetter) { return "" }
-
-        $drive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveLetter'"
-        if ($drive) {
-            $freeByte = $drive.FreeSpace
-            
-            # 単位の自動繰り上げ（TBまで対応）
-            if ($freeByte -ge 1TB) {
-                $freeText = "{0:N2}TB" -f ($freeByte / 1TB)
-            } elseif ($freeByte -ge 1GB) {
-                $freeText = "{0:N2}GB" -f ($freeByte / 1GB)
-            } elseif ($freeByte -ge 1MB) {
-                $freeText = "{0:N2}MB" -f ($freeByte / 1MB)
-            } else {
-                $freeText = "{0:N2}KB" -f ($freeByte / 1KB)
-            }
-
-            # ▼ 設定に基づいて警告絵文字を判定
-            $alert = ""
-            if ($ENABLE_DRIVE_ALERT -and ($freeByte -lt $DRIVE_ALERT_THRESHOLD)) {
-                $alert = "⚠️"
-            }
-
-            $driveName = $driveLetter.TrimEnd(":")
-            return " $driveName-Free:$alert**$freeText**"
-        }
-    } catch {
-        return ""
-    }
-    return ""
-}
-
 function Test-DenyByKeyword {
     param(
         [string]$Target,
@@ -304,55 +152,6 @@ function Parse-DateTime {
 }
 
 
-# =========================
-# 録画終了時番組内容追加 26.02.15
-# 録画終了時番組内容追加 26.02.15
-function Get-ProgramSummary {
-    param(
-        [string]$TsPath
-    )
-
-    if (-not $TsPath) { return "" }
-
-    # .ts → .ts.program.txt
-    $programPath = "$TsPath.program.txt"
-
-    if (-not (Test-Path -LiteralPath $programPath)) {
-        return ""   # 無ければ何も返さない（エラーにしない）
-    }
-
-    try {
-        $lines = Get-Content -LiteralPath $programPath -Encoding Default
-    } catch {
-        return ""
-    }
-
-    $collect = $false
-    $summary = @()
-
-    foreach ($line in $lines) {
-
-        if (-not $collect) {
-            if ([string]::IsNullOrWhiteSpace($line)) {
-                $collect = $true
-            }
-            continue
-        }
-
-		if ($line -match "^詳細情報\s*$" `
-			-or $line -match "^ジャンル\s*[:：]" `
-			-or $line -match "^映像\s*[:：]" ) {
-			break
-		}
-
-        if (-not [string]::IsNullOrWhiteSpace($line)) {
-            $summary += $line
-        }
-    }
-
-    return ($summary -join "`n").Trim()
-}
-# =========================
 
 # 録画失敗時にメンション 26.06.28
 function Test-NeedAlertMention {
@@ -409,17 +208,9 @@ function Debug-Print {
 $mode = $args[0]
 if (-not $mode) { exit }
 
-# =========================
-# 局ロゴ追加 26.02.14
-$serviceRaw = Get-Env "ServiceName"
-$discord_emoji = Get-ServiceEmoji $serviceRaw (Get-Env ONID10) (Get-Env SID10)
-# =========================
-
-
 $title      = Escape-DiscordMarkdown (Get-Env "Title")
 $title_old  = Escape-DiscordMarkdown (Get-Env "TitleOLD")
-# $service    = Escape-DiscordMarkdown (Get-Env "ServiceName")
-$service    = Escape-DiscordMarkdown $serviceRaw
+$service    = Escape-DiscordMarkdown (Get-Env "ServiceName")
 $ONID		= Get-Env ONID10
 $startDate  = "{0}/{1}/{2}" -f (Get-Env SDYYYY),(Get-Env SDMM),(Get-Env SDDD)
 $startTime  = "{0}:{1}" -f (Get-Env STHH),(Get-Env STMM)
@@ -597,8 +388,6 @@ switch ($mode) {
     # 録画終了
     "PostRecEnd" {
         $fs = Get-FileSizeEx $filePath
-        $driveSpace = Get-DriveSpaceText $filePath
-        $programSummary = Get-ProgramSummary $filePath
 
         # 結果整理
         $resultMain = "録画終了"
@@ -621,14 +410,6 @@ switch ($mode) {
         }
         $sizeText = $fs.SizeText
 
-        # 番組内容の組み立て
-        $quotedSummary = ""
-        if ($programSummary) {
-            $quotedSummary = "`n" + (($programSummary -split "`r?`n" | ForEach-Object {
-                if ([string]::IsNullOrWhiteSpace($_)) { ">" } else { "> $_" }
-            }) -join "`n")
-        }
-		
 		# $commentText がある時だけ、見出し付きの文字列に化けさせる
 		if ($commentText) { 
 			$commentText = " Comment:**$commentText**"
