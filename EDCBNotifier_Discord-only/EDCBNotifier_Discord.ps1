@@ -644,24 +644,83 @@ if (-not $message) { exit }
 # =========================
 # 送信先の決定
 # =========================
-$targetWebhook = $DISCORD_WEBHOOK_URL
-
-switch ($mode) {
-    "PostAddReserve" { if ($WEBHOOK_ADD_RESERVE) { $targetWebhook = $WEBHOOK_ADD_RESERVE } }
-    "PostChgReserve" { if ($WEBHOOK_CHG_RESERVE) { $targetWebhook = $WEBHOOK_CHG_RESERVE } }
-    "PostRecStart"   { if ($WEBHOOK_REC_START)   { $targetWebhook = $WEBHOOK_REC_START   } }
-    "PostRecEnd"     { if ($WEBHOOK_REC_END)     { $targetWebhook = $WEBHOOK_REC_END     } }
+# 26.11.14 中身のない URL (config.psd1 の初期値 "https://discord.com/api/webhooks/" など) は未設定として扱う
+function Test-WebhookUrl {
+    param([string]$Url)
+    return ($Url -match '^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/[\w-]+')
 }
 
-# 送信先が結局空なら終了
-if (-not $targetWebhook) { 
-    Debug-Print "❌ 送信先Webhook URLが設定されていません。"
-    exit 
+$eventWebhook = switch ($mode) {
+    "PostAddReserve" { $WEBHOOK_ADD_RESERVE }
+    "PostChgReserve" { $WEBHOOK_CHG_RESERVE }
+    "PostRecStart"   { $WEBHOOK_REC_START }
+    "PostRecEnd"     { $WEBHOOK_REC_END }
+}
+
+if (Test-WebhookUrl $eventWebhook) {
+    $targetWebhook = $eventWebhook
+} else {
+    if ($eventWebhook) { Debug-Print "⚠️ $mode 用の Webhook URL が正しくないので、DISCORD_WEBHOOK_URL に送ります。" }
+    $targetWebhook = $DISCORD_WEBHOOK_URL
+}
+
+if (-not (Test-WebhookUrl $targetWebhook)) {
+    Debug-Print "❌ Webhook URL が設定されていません。config.psd1 の DISCORD_WEBHOOK_URL に、Discord でコピーした Webhook URL を書いてください。"
+    exit 1
 }
 
 # =========================
 # Discord送信
 # =========================
+# 26.11.14 送信に失敗したら再送する
+#   429 (送信制限)         … Discord が指定する秒数だけ待って再送
+#   5xx / 通信エラー        … 少しずつ間隔をあけて再送
+#   それ以外 (400 など)     … 何度送っても同じなので再送しない
+function Send-DiscordWebhook {
+    param([string]$Url, [string]$Body, [int]$MaxTry = 5)
+    $backoff = @(2, 5, 10, 20)
+    for ($try = 1; $try -le $MaxTry; $try++) {
+        try {
+            Invoke-RestMethod -Uri $Url -Method Post -ContentType 'application/json; charset=utf-8' -Body $Body | Out-Null
+            if ($try -gt 1) { Debug-Print "✅ 再送で送信できました ($try 回目)" }
+            return $true
+        } catch {
+            $status = 0
+            if ($_.Exception.Response) { try { $status = [int]$_.Exception.Response.StatusCode } catch {} }
+            $detail = $_.ErrorDetails.Message
+            # PowerShell 5.1 ではエラー応答の本文が入らないことがあるので、直接読む
+            if (-not $detail -and $_.Exception.Response) {
+                try {
+                    $reader = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+                    $detail = $reader.ReadToEnd()
+                    $reader.Dispose()
+                } catch {}
+            }
+            if (-not $detail) { $detail = $_.Exception.Message }
+
+            if ($status -eq 429) {
+                $wait = 0
+                try { $wait = [double]($detail | ConvertFrom-Json).retry_after } catch {}
+                if ($wait -le 0) { try { $wait = [double]$_.Exception.Response.Headers["Retry-After"] } catch {} }
+                if ($wait -le 0) { $wait = 5 }
+                $wait = [math]::Min([math]::Ceiling($wait) + 1, 60)
+            } elseif ($status -eq 0 -or $status -ge 500) {
+                $wait = $backoff[[math]::Min($try - 1, $backoff.Count - 1)]
+            } else {
+                Debug-Print "❌ 送信に失敗しました ($status): $detail"
+                return $false
+            }
+
+            if ($try -ge $MaxTry) {
+                Debug-Print "❌ $MaxTry 回送っても失敗しました ($status): $detail"
+                return $false
+            }
+            Debug-Print "…送信に失敗しました ($status)。$wait 秒後に再送します ($try/$MaxTry)"
+            Start-Sleep -Seconds $wait
+        }
+    }
+    return $false
+}
 
 $content = $message
 if ($mention) {
@@ -673,8 +732,4 @@ $payload = @{
     content    = $content
 } | ConvertTo-Json -Depth 5 -Compress
 
-Invoke-RestMethod `
-    -Uri $targetWebhook `
-    -Method Post `
-    -ContentType 'application/json; charset=utf-8' `
-    -Body $payload
+if (-not (Send-DiscordWebhook -Url $targetWebhook -Body $payload)) { exit 1 }
