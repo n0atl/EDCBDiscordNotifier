@@ -252,6 +252,8 @@ function Escape-DiscordMarkdown {
     foreach ($c in $chars) {
         $Text = $Text -replace [regex]::Escape($c), "\$c"
     }
+    # 行頭の # (見出し) と - (箇条書き・小さい文字) も文字として表示させる 26.11.14
+    $Text = $Text -replace '(?m)^(\s*)([#-])', '$1\$2'
     return $Text
 }
 
