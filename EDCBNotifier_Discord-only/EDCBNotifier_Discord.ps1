@@ -47,20 +47,107 @@ $DENY_TITLES            = [string[]]$Config.DENY_TITLES
 # =========================
 # 局ロゴ追加 26.02.14
 # 局ロゴ追加 26.06.27 JSON外部参照方式に変更
+# 局ロゴ判定 26.11.14 ONID-SID のキーと、局名の最長一致に対応
 # =========================
-function Get-ServiceEmoji {
-    param([string]$ServiceName)
-    if (-not $ServiceName) { return "" }
-    $jsonPath = Join-Path $PSScriptRoot "DTVlogo.json"
-    if (-not (Test-Path -LiteralPath $jsonPath)) { return "" }
-    try {
-        $emojiMap = Get-Content -LiteralPath $jsonPath -Raw -Encoding utf8 | ConvertFrom-Json
-        foreach ($key in $emojiMap.psobject.Properties.Name) {
-            if ($ServiceName -like "*$key*") {
-                return $emojiMap.$key
-            }
+# DTVlogo.json の書き方は README の「局ロゴ絵文字」を参照
+#   局名は 全角/半角、大文字/小文字、空白の数、ダッシュ・波ダッシュの種類 の違いを無視して比較する
+#   判定の優先順位: 1. "ONID-SID" のキー  2. 局名のキー (一番長く一致したもの。その中で "sid" に今の SID があればそれを使う)
+
+function ConvertTo-DTVLogoKey {
+    # 比較用に正規化 (NFKC で全角英数→半角、連続する空白は1つに)
+    # 空白を消すと「TBS NEWS」が「BSN」に一致するなど誤判定が出るので、空白は残す
+    # ダッシュ類 (－ − ‐ など) と 波ダッシュ類 (～ 〜) は、コピーや文字コード変換で入れ替わりやすいので同じ文字として扱う
+    param([string]$Text)
+    if (-not $Text) { return "" }
+    $t = $Text.Normalize([Text.NormalizationForm]::FormKC)
+    $t = $t -replace '[‐-―−﹣－]', '-' -replace '[〜～∼]', '~'
+    return ($t -replace '\s+', ' ').Trim()
+}
+
+function Test-DTVLogoIdKey {
+    # "ONID-SID" の形のキーか
+    param([string]$Key)
+    return ($Key -match '^\d+-\d+$')
+}
+
+function New-DTVLogoValue {
+    # 値 (絵文字と、SID ごとの例外) を作る
+    param([string]$Emoji = "", $Sid = $null)
+    $v = @{ emoji = $Emoji; sid = [ordered]@{} }
+    if ($Sid) { foreach ($k in $Sid.Keys) { $v.sid["$k"] = [string]$Sid[$k] } }
+    return $v
+}
+
+function Import-DTVLogoMap {
+    # DTVlogo.json を読み込み、順序付きハッシュテーブル (キー → @{ emoji; sid }) で返す
+    param([string]$Path)
+    $map = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $map }
+    $json = Get-Content -LiteralPath $Path -Raw -Encoding utf8 | ConvertFrom-Json
+    foreach ($p in $json.psobject.Properties) {
+        $val = $p.Value
+        if ($val -is [string] -or $null -eq $val) {
+            $map[$p.Name] = New-DTVLogoValue -Emoji ([string]$val)
+        } else {
+            $sid = [ordered]@{}
+            if ($val.sid) { foreach ($s in $val.sid.psobject.Properties) { $sid[$s.Name] = [string]$s.Value } }
+            $map[$p.Name] = New-DTVLogoValue -Emoji ([string]$val.emoji) -Sid $sid
         }
-    } catch {}
+    }
+    return $map
+}
+
+function Find-DTVLogo {
+    # 一番条件に合うキーを返す。無ければ $null
+    # 戻り値: @{ Key; Emoji; Kind ("id" / "name" / "name+sid") }
+    param(
+        $Map,
+        [string]$Onid,
+        [string]$Sid,
+        [string]$ServiceName
+    )
+    [int]$onidInt = -1
+    [int]$sidInt = -1
+    $hasOnid = [int]::TryParse($Onid, [ref]$onidInt)
+    $hasSid = [int]::TryParse($Sid, [ref]$sidInt)
+
+    if ($hasOnid -and $hasSid -and $Map.Contains("$onidInt-$sidInt")) {
+        return @{ Key = "$onidInt-$sidInt"; Emoji = $Map["$onidInt-$sidInt"].emoji; Kind = "id" }
+    }
+
+    $nameKey = ConvertTo-DTVLogoKey $ServiceName
+    if (-not $nameKey) { return $null }
+    $best = $null
+    $bestLen = 0
+    foreach ($k in $Map.Keys) {
+        if (Test-DTVLogoIdKey $k) { continue }
+        $mk = ConvertTo-DTVLogoKey $k
+        if ($mk -and $mk.Length -gt $bestLen -and $nameKey.IndexOf($mk, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $best = $k
+            $bestLen = $mk.Length
+        }
+    }
+    if ($null -eq $best) { return $null }
+    $v = $Map[$best]
+    if ($hasSid -and $v.sid.Contains("$sidInt")) {
+        return @{ Key = $best; Emoji = $v.sid["$sidInt"]; Kind = "name+sid" }
+    }
+    return @{ Key = $best; Emoji = $v.emoji; Kind = "name" }
+}
+
+function Get-ServiceEmoji {
+    param([string]$ServiceName, [string]$Onid, [string]$Sid)
+    $jsonPath = Join-Path $PSScriptRoot "DTVlogo.json"
+    try {
+        $map = Import-DTVLogoMap -Path $jsonPath
+        $hit = Find-DTVLogo -Map $map -Onid $Onid -Sid $Sid -ServiceName $ServiceName
+        if ($hit) {
+            Debug-Print "Logo      : $($hit.Key) ($($hit.Kind))"
+            return $hit.Emoji
+        }
+    } catch {
+        Debug-Print "Logo      : DTVlogo.json の読み込みに失敗 $($_.Exception.Message)"
+    }
     return ""
 }
 # =========================
@@ -323,7 +410,7 @@ if (-not $mode) { exit }
 # =========================
 # 局ロゴ追加 26.02.14
 $serviceRaw = Get-Env "ServiceName"
-$discord_emoji = Get-ServiceEmoji $serviceRaw
+$discord_emoji = Get-ServiceEmoji $serviceRaw (Get-Env ONID10) (Get-Env SID10)
 # =========================
 
 
