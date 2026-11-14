@@ -494,6 +494,12 @@ if ([int]::TryParse($ONID, [ref]$onidInt)) {
     elseif ($onidInt -eq 0x0007) {
         $NWN = "(CS2)"
     }
+    elseif ($onidInt -eq 0x000B) {
+        $NWN = "(高度BS)"
+    }
+    elseif ($onidInt -eq 0x000C) {
+        $NWN = "(高度CS)"
+    }
     elseif ($onidInt -in @(0xFFFE, 0xFFFA, 0xFFFD, 0xFFF9)) {
         $NWN = "(CATV)"
     }
