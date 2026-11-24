@@ -1,4 +1,4 @@
-# EDCBDiscordNotifier (PowerShell版)
+﻿# EDCBDiscordNotifier (PowerShell版)
 
 EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製のツールです。
 <img src="https://github.com/user-attachments/assets/414e0e1e-edcd-4f7a-82aa-871946110d93" width="500" alt="通知イメージ">
@@ -22,9 +22,13 @@ EDCB（EpgTimer）の予約・録画状況をDiscordへ通知するPowerShell製
   * 空き容量不足時の警告表示
   * program.txtから番組概要を引用表示
   * 録画失敗時・Drop発生時のメンション通知（設定可能）
+  * 録画サムネイル画像の添付（録画終了時）
 
 * フィルタリング
   * 放送局名・番組名による許可/拒否リスト
+
+* 複数サーバーへの通知
+  * targets.psd1 で通知先（Discord サーバー）ごとに config.psd1 を分けて一括送信
 
   * 放送局名・番組名による許可/拒否リストに対応
 
@@ -120,6 +124,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0EDCBNotifier_Discord-o
 * 録画保存先ドライブの空き容量
 * 録画結果コメント（録画失敗・キャンセルなど）
 * 番組概要（program.txtが存在する場合）
+* サムネイル画像（設定で有効な場合）
 
 ---
 

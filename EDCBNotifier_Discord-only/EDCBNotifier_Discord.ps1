@@ -3,45 +3,33 @@ $PSDefaultParameterValues['ConvertTo-Json:Encoding'] = 'utf8'
 $IsFromEDCB = $env:ServiceName -or $env:Title -or $env:FilePath
 
 # =========================
-# 設定読み込み (config.psd1)
+# ターゲット定義 (targets.psd1)
 # =========================
-$configPath = Join-Path $PSScriptRoot "config.psd1"
-if (-not (Test-Path -LiteralPath $configPath)) {
-    Write-Error "config.psd1が見つかりません: $configPath"
-    exit 1
+# targets.psd1 があれば、その定義にしたがって複数の送信先 (Discord サーバー) へ通知する。
+# 無ければ自フォルダの config.psd1 のみを使う単一ターゲットとして動作する (従来どおり)。
+# 各ターゲット: Name (ログ表示名) / ConfigDir (config.psd1 のあるフォルダ。この ps1 からの相対でも絶対でも可) / Modes (担当モード。省略時は全モード)
+$EngineRoot = $PSScriptRoot
+$NotifierTargets = @(
+    @{ Name = ''; ConfigPath = (Join-Path $EngineRoot 'config.psd1'); Modes = $null }
+)
+$targetsFile = Join-Path $EngineRoot 'targets.psd1'
+if (Test-Path -LiteralPath $targetsFile) {
+    try {
+        $targetsData = Import-PowerShellDataFile -LiteralPath $targetsFile
+        if ($targetsData.Targets) {
+            $NotifierTargets = @(
+                foreach ($t in $targetsData.Targets) {
+                    $dir = [string]$t.ConfigDir
+                    if (-not $dir -or $dir -eq '.') { $dir = $EngineRoot }
+                    elseif (-not [IO.Path]::IsPathRooted($dir)) { $dir = Join-Path $EngineRoot $dir }
+                    @{ Name = [string]$t.Name; ConfigPath = (Join-Path $dir 'config.psd1'); Modes = $t.Modes }
+                }
+            )
+        }
+    } catch {
+        Write-Error "targets.psd1 の読み込みに失敗しました: $($_.Exception.Message)"
+    }
 }
-# 安全にPSD1ファイルを読み込んでハッシュテーブルとして格納
-$Config = Import-PowerShellDataFile -LiteralPath $configPath
-
-# 各変数へ展開
-$DISCORD_WEBHOOK_URL    = $Config.DISCORD_WEBHOOK_URL
-$WEBHOOK_ADD_RESERVE    = $Config.WEBHOOK_ADD_RESERVE
-$WEBHOOK_CHG_RESERVE    = $Config.WEBHOOK_CHG_RESERVE
-$WEBHOOK_REC_START      = $Config.WEBHOOK_REC_START
-$WEBHOOK_REC_END        = $Config.WEBHOOK_REC_END
-$DISCORD_USERNAME       = $Config.DISCORD_USERNAME
-$DISCORD_AVATAR         = $Config.DISCORD_AVATAR
-$ENABLE_DRIVE_INFO      = $Config.ENABLE_DRIVE_INFO
-$ENABLE_DRIVE_ALERT     = $Config.ENABLE_DRIVE_ALERT
-$ENABLE_DROP_MENTION  = $Config.ENABLE_DROP_MENTION
-$ENABLE_ERROR_MENTION = $Config.ENABLE_ERROR_MENTION
-# メンション先 (config.psd1 の MENTION_ID。旧名 ALERT_MENTION にも対応)
-$ALERT_MENTION        = $Config.MENTION_ID
-if (-not $ALERT_MENTION) { $ALERT_MENTION = $Config.ALERT_MENTION }
-# 未記入のサンプル値 "<@>" などはメンション無しとして扱う
-if ($ALERT_MENTION -match '^\s*<@[!&]?>\s*$') { $ALERT_MENTION = "" }
-
-# PSD1側で「100GB」と書いたデータがそのまま実バイト数として入ります
-$DRIVE_ALERT_THRESHOLD  = $Config.DRIVE_ALERT_THRESHOLD
-
-# 配列オブジェクトの変換（明示的に型を固定）
-$ALLOW_SERVICES         = [string[]]$Config.ALLOW_SERVICES
-$ALLOW_TITLES           = [string[]]$Config.ALLOW_TITLES
-$DENY_SERVICES          = [string[]]$Config.DENY_SERVICES
-$DENY_TITLES            = [string[]]$Config.DENY_TITLES
-
-# =========================
-
 # =========================
 # 共通関数
 # =========================
@@ -399,15 +387,262 @@ function Debug-Print {
     $isDebug = if ($null -ne $DEBUG) { $DEBUG } else { $true }
     
     if ($isDebug) {
-        Write-Host $Text -ForegroundColor DarkGray
+        $prefix = ""
+        if ($script:TargetName) { $prefix = "[$script:TargetName] " }
+        Write-Host "$prefix$Text" -ForegroundColor DarkGray
     }
 }
 # =========================
 # メイン
 # =========================
 
-$mode = $args[0]
-if (-not $mode) { exit }
+function New-RecThumbnail {
+    # 録画TSから等間隔サンプリングのタイル画像を生成し、一時ファイルのパスを返す。失敗時は $null
+    # ffmpeg 1回の実行で完結する (中間の個別フレーム画像は作らない)
+    param([string]$TsPath)
+    if (-not $ENABLE_REC_THUMBNAIL) { return $null }
+    if (-not $TsPath -or -not (Test-Path -LiteralPath $TsPath)) { return $null }
+    if (-not (Test-Path -LiteralPath $FFMPEG_PATH)) {
+        Debug-Print "⚠️ サムネイル: ffmpeg が見つかりません ($FFMPEG_PATH)"
+        return $null
+    }
+    $tmp = Join-Path $env:TEMP ("edcb_thumb_{0}.jpg" -f [guid]::NewGuid().ToString('N'))
+    try {
+        # 総再生時間を取得
+        $durLine = (& $FFMPEG_PATH -hide_banner -i $TsPath 2>&1 | Select-String 'Duration: ' | Select-Object -First 1).Line
+        $m = [regex]::Match([string]$durLine, 'Duration: (\d+):(\d+):([\d.]+)')
+        if (-not $m.Success) {
+            Debug-Print "⚠️ サムネイル: Duration を取得できませんでした"
+            return $null
+        }
+        $total = [int]$m.Groups[1].Value * 3600 + [int]$m.Groups[2].Value * 60 + [double]$m.Groups[3].Value
+        if ($total -le 0) { return $null }
+
+        # 録画時間に合わせてグリッドを変える (短い録画でサムネが密になりすぎないように)。上限は config の THUMB_COLS/ROWS
+        $gridMax = [math]::Min($THUMB_COLS, $THUMB_ROWS)
+        $grid = 6
+        if ($total -lt 180) { $grid = 2 }
+        elseif ($total -lt 480) { $grid = 3 }
+        elseif ($total -lt 900) { $grid = 4 }
+        elseif ($total -lt 1500) { $grid = 5 }
+        if ($grid -gt $gridMax) { $grid = $gridMax }
+        Debug-Print "🖼️ サムネイル: $([int]$total)秒 → ${grid}x${grid}"
+        $n = $grid * $grid
+        # マスが少ない時は1マスを大きくする (2x2: 640x360 / 3x3: 512x288 / それ以外: 384x216)
+        $w = 384
+        if ($grid -le 2) { $w = 640 } elseif ($grid -eq 3) { $w = 512 }
+        $h = [int]($w * 9 / 16)
+        $fontSize = [math]::Max(14, [int]($h * 0.075))
+        $ffArgs = @('-y', '-v', 'error')
+        $scales = @(); $layout = @(); $ins = @()
+        for ($i = 0; $i -lt $n; $i++) {
+            $t = [math]::Round(($i + 0.5) * $total / $n, 2)
+            $ffArgs += @('-ss', "$t", '-i', $TsPath)
+            # 各マスの左下に、そのフレームの再生時間を表示する
+            $tsSpan = [TimeSpan]::FromSeconds($t)
+            if ($total -ge 3600) { $tsText = $tsSpan.ToString('h\:mm\:ss') } else { $tsText = $tsSpan.ToString('mm\:ss') }
+            $tsEsc = $tsText -replace ':', '\:'
+            $scales += "[$i`:v]yadif,scale=$w`:$h,setsar=1,drawtext=fontfile='C\:/Windows/Fonts/arial.ttf':text='$tsEsc':x=6:y=h-text_h-6:fontsize=${fontSize}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=5[s$i]"
+            $layout += ("{0}_{1}" -f (($i % $grid) * $w), ([math]::Floor($i / $grid) * $h))
+            $ins += "[s$i]"
+        }
+        $fc = ($scales -join ';') + ';' + ($ins -join '') + "xstack=inputs=$n`:layout=" + ($layout -join '|') + '[out]'
+        $ffArgs += @('-filter_complex', $fc, '-map', '[out]', '-frames:v', '1', '-q:v', '3', $tmp)
+
+        # 60秒でタイムアウト (通知全体を止めないため)
+        $psi = [Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $FFMPEG_PATH
+        $psi.Arguments = ($ffArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardError = $true
+        $proc = [Diagnostics.Process]::Start($psi)
+        if (-not $proc.WaitForExit(60000)) {
+            try { $proc.Kill() } catch {}
+            Debug-Print "⚠️ サムネイル: ffmpeg がタイムアウトしました"
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+        $proc.StandardError.ReadToEnd() | Out-Null
+        if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $tmp) -or (Get-Item -LiteralPath $tmp).Length -le 0) {
+            Debug-Print "⚠️ サムネイル: ffmpeg の生成に失敗しました (ExitCode: $($proc.ExitCode))"
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+        Debug-Print "🖼️ サムネイル生成: $tmp"
+        return $tmp
+    } catch {
+        Debug-Print "⚠️ サムネイル生成で例外: $($_.Exception.Message)"
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+}
+
+# 26.11.14 中身のない URL (config.psd1 の初期値 "https://discord.com/api/webhooks/" など) は未設定として扱う
+function Test-WebhookUrl {
+    param([string]$Url)
+    return ($Url -match '^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/[\w-]+')
+}
+
+# 26.11.14 送信に失敗したら再送する
+#   429 (送信制限)         … Discord が指定する秒数だけ待って再送
+#   5xx / 通信エラー        … 少しずつ間隔をあけて再送
+#   それ以外 (400 など)     … 何度送っても同じなので再送しない
+function Send-DiscordWebhook {
+    param([string]$Url, [string]$Body, [int]$MaxTry = 5)
+    $backoff = @(2, 5, 10, 20)
+    for ($try = 1; $try -le $MaxTry; $try++) {
+        try {
+            Invoke-RestMethod -Uri $Url -Method Post -ContentType 'application/json; charset=utf-8' -Body $Body | Out-Null
+            if ($try -gt 1) { Debug-Print "✅ 再送で送信できました ($try 回目)" }
+            return $true
+        } catch {
+            $status = 0
+            if ($_.Exception.Response) { try { $status = [int]$_.Exception.Response.StatusCode } catch {} }
+            $detail = $_.ErrorDetails.Message
+            # PowerShell 5.1 ではエラー応答の本文が入らないことがあるので、直接読む
+            if (-not $detail -and $_.Exception.Response) {
+                try {
+                    $reader = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+                    $detail = $reader.ReadToEnd()
+                    $reader.Dispose()
+                } catch {}
+            }
+            if (-not $detail) { $detail = $_.Exception.Message }
+
+            if ($status -eq 429) {
+                $wait = 0
+                try { $wait = [double]($detail | ConvertFrom-Json).retry_after } catch {}
+                if ($wait -le 0) { try { $wait = [double]$_.Exception.Response.Headers["Retry-After"] } catch {} }
+                if ($wait -le 0) { $wait = 5 }
+                $wait = [math]::Min([math]::Ceiling($wait) + 1, 60)
+            } elseif ($status -eq 0 -or $status -ge 500) {
+                $wait = $backoff[[math]::Min($try - 1, $backoff.Count - 1)]
+            } else {
+                Debug-Print "❌ 送信に失敗しました ($status): $detail"
+                return $false
+            }
+
+            if ($try -ge $MaxTry) {
+                Debug-Print "❌ $MaxTry 回送っても失敗しました ($status): $detail"
+                return $false
+            }
+            Debug-Print "…送信に失敗しました ($status)。$wait 秒後に再送します ($try/$MaxTry)"
+            Start-Sleep -Seconds $wait
+        }
+    }
+    return $false
+}
+
+function Send-DiscordWebhookWithFile {
+    # 画像ファイルを添付して送信する (multipart/form-data)。再送ルールは Send-DiscordWebhook と同じ
+    param([string]$Url, [string]$Body, [string]$FilePath, [string]$AttachName = 'thumbnail.jpg', [int]$MaxTry = 5)
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $backoff = @(2, 5, 10, 20)
+    for ($try = 1; $try -le $MaxTry; $try++) {
+        $client = [System.Net.Http.HttpClient]::new()
+        $content = [System.Net.Http.MultipartFormDataContent]::new()
+        try {
+            $jsonPart = [System.Net.Http.StringContent]::new($Body, [Text.Encoding]::UTF8, 'application/json')
+            $content.Add($jsonPart, 'payload_json')
+            $filePart = [System.Net.Http.ByteArrayContent]::new([IO.File]::ReadAllBytes($FilePath))
+            $filePart.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('image/jpeg')
+            $content.Add($filePart, 'files[0]', $AttachName)
+            $resp = $client.PostAsync($Url, $content).Result
+            $status = [int]$resp.StatusCode
+            if ($resp.IsSuccessStatusCode) {
+                if ($try -gt 1) { Debug-Print "✅ 再送で送信できました ($try 回目)" }
+                return $true
+            }
+            $detail = $resp.Content.ReadAsStringAsync().Result
+            if ($status -eq 429) {
+                $wait = 0
+                try { $wait = [double]($detail | ConvertFrom-Json).retry_after } catch {}
+                if ($wait -le 0) { $wait = 5 }
+                $wait = [math]::Min([math]::Ceiling($wait) + 1, 60)
+            } elseif ($status -ge 500) {
+                $wait = $backoff[[math]::Min($try - 1, $backoff.Count - 1)]
+            } else {
+                Debug-Print "❌ 送信に失敗しました ($status): $detail"
+                return $false
+            }
+            if ($try -ge $MaxTry) {
+                Debug-Print "❌ $MaxTry 回送っても失敗しました ($status): $detail"
+                return $false
+            }
+            Debug-Print "…送信に失敗しました ($status)。$wait 秒後に再送します ($try/$MaxTry)"
+            Start-Sleep -Seconds $wait
+        } catch {
+            if ($try -ge $MaxTry) {
+                Debug-Print "❌ $MaxTry 回送っても失敗しました: $($_.Exception.Message)"
+                return $false
+            }
+            $wait = $backoff[[math]::Min($try - 1, $backoff.Count - 1)]
+            Debug-Print "…送信に失敗しました。$wait 秒後に再送します ($try/$MaxTry)"
+            Start-Sleep -Seconds $wait
+        } finally {
+            $content.Dispose()
+            $client.Dispose()
+        }
+    }
+    return $false
+}
+
+# =========================
+# ターゲット1件分の処理 (config 読み込み → フィルタ → メッセージ生成 → 送信)
+# 戻り値: 'ok' (送信した) / 'skip' (フィルタや条件で送信しなかった) / 'fail' (送信に失敗した)
+# =========================
+function Invoke-NotifierTarget {
+    param([string]$ConfigPath, [string]$SharedThumbPath)
+# =========================
+# 設定読み込み (このターゲットの config.psd1)
+# =========================
+$configPath = $ConfigPath
+if (-not (Test-Path -LiteralPath $configPath)) {
+    Debug-Print "❌ config.psd1が見つかりません: $configPath"
+    return 'fail'
+}
+# 安全にPSD1ファイルを読み込んでハッシュテーブルとして格納
+$Config = Import-PowerShellDataFile -LiteralPath $configPath
+
+# 各変数へ展開
+$DISCORD_WEBHOOK_URL    = $Config.DISCORD_WEBHOOK_URL
+$WEBHOOK_ADD_RESERVE    = $Config.WEBHOOK_ADD_RESERVE
+$WEBHOOK_CHG_RESERVE    = $Config.WEBHOOK_CHG_RESERVE
+$WEBHOOK_REC_START      = $Config.WEBHOOK_REC_START
+$WEBHOOK_REC_END        = $Config.WEBHOOK_REC_END
+$DISCORD_USERNAME       = $Config.DISCORD_USERNAME
+$DISCORD_AVATAR         = $Config.DISCORD_AVATAR
+$ENABLE_DRIVE_INFO      = $Config.ENABLE_DRIVE_INFO
+$ENABLE_DRIVE_ALERT     = $Config.ENABLE_DRIVE_ALERT
+$ENABLE_DROP_MENTION  = $Config.ENABLE_DROP_MENTION
+$ENABLE_ERROR_MENTION = $Config.ENABLE_ERROR_MENTION
+# 録画終了サムネイル (config.psd1 未設定なら既定値を使う)
+$ENABLE_REC_THUMBNAIL = $Config.ENABLE_REC_THUMBNAIL
+if ($null -eq $ENABLE_REC_THUMBNAIL) { $ENABLE_REC_THUMBNAIL = $true }
+$FFMPEG_PATH = $Config.FFMPEG_PATH
+if (-not $FFMPEG_PATH) { $FFMPEG_PATH = 'C:\ffmpeg\ffmpeg.exe' }
+$THUMB_COLS = $Config.THUMB_COLS
+if (-not $THUMB_COLS) { $THUMB_COLS = 6 }
+$THUMB_ROWS = $Config.THUMB_ROWS
+if (-not $THUMB_ROWS) { $THUMB_ROWS = 6 }
+# メンション先 (config.psd1 の MENTION_ID。旧名 ALERT_MENTION にも対応)
+$ALERT_MENTION        = $Config.MENTION_ID
+if (-not $ALERT_MENTION) { $ALERT_MENTION = $Config.ALERT_MENTION }
+# 未記入のサンプル値 "<@>" などはメンション無しとして扱う
+if ($ALERT_MENTION -match '^\s*<@[!&]?>\s*$') { $ALERT_MENTION = "" }
+
+# PSD1側で「100GB」と書いたデータがそのまま実バイト数として入ります
+$DRIVE_ALERT_THRESHOLD  = $Config.DRIVE_ALERT_THRESHOLD
+
+# 配列オブジェクトの変換（明示的に型を固定）
+$ALLOW_SERVICES         = [string[]]$Config.ALLOW_SERVICES
+$ALLOW_TITLES           = [string[]]$Config.ALLOW_TITLES
+$DENY_SERVICES          = [string[]]$Config.DENY_SERVICES
+$DENY_TITLES            = [string[]]$Config.DENY_TITLES
+
+# =========================
+
 
 # =========================
 # 局ロゴ追加 26.02.14
@@ -450,21 +685,21 @@ if ($IsFromEDCB) {
     # --- DENY
     if (Test-DenyByKeyword $service $DENY_SERVICES) {
         Debug-Print "❌ DENY: 指定した放送局により除外されました"
-        exit
+        return 'skip'
     }
     if (Test-DenyByKeyword $title $DENY_TITLES) {
         Debug-Print "❌ DENY: 指定した番組名により除外されました"
-        exit
+        return 'skip'
     }
     # --- ALLOW
     if (-not (Test-AllowByKeyword $service $ALLOW_SERVICES)) {
         Debug-Print "❌ ALLOW: Service が許可リストに含まれていません"
-        exit
+        return 'skip'
     }
 
     if (-not (Test-AllowByKeyword $title $ALLOW_TITLES)) {
         Debug-Print "❌ ALLOW: Title が許可リストに含まれていません"
-        exit
+        return 'skip'
     }
 
     Debug-Print "✅フィルタ通過"
@@ -569,7 +804,7 @@ switch ($mode) {
         $timeChanged  = ($startOld -ne $startNew -or $endOld -ne $endNew)
 
         # 番組名と日時が一致してたら実行しない
-        if (-not ($titleChanged -or $timeChanged)) { exit }
+        if (-not ($titleChanged -or $timeChanged)) { return 'skip' }
 
         # テンプレート用に時間表記を共通変数化
         $timeOldText = $startOld.ToString("yy/MM/dd($SDWOLD) HH:mm") + "～" + $endOld.ToString("HH:mm")
@@ -647,16 +882,12 @@ switch ($mode) {
     }
 }
 
-if (-not $message) { exit }
+if (-not $message) { return 'skip' }
 
 # =========================
 # 送信先の決定
 # =========================
-# 26.11.14 中身のない URL (config.psd1 の初期値 "https://discord.com/api/webhooks/" など) は未設定として扱う
-function Test-WebhookUrl {
-    param([string]$Url)
-    return ($Url -match '^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/[\w-]+')
-}
+
 
 $eventWebhook = switch ($mode) {
     "PostAddReserve" { $WEBHOOK_ADD_RESERVE }
@@ -674,61 +905,13 @@ if (Test-WebhookUrl $eventWebhook) {
 
 if (-not (Test-WebhookUrl $targetWebhook)) {
     Debug-Print "❌ Webhook URL が設定されていません。config.psd1 の DISCORD_WEBHOOK_URL に、Discord でコピーした Webhook URL を書いてください。"
-    exit 1
+    return 'fail'
 }
 
 # =========================
 # Discord送信
 # =========================
-# 26.11.14 送信に失敗したら再送する
-#   429 (送信制限)         … Discord が指定する秒数だけ待って再送
-#   5xx / 通信エラー        … 少しずつ間隔をあけて再送
-#   それ以外 (400 など)     … 何度送っても同じなので再送しない
-function Send-DiscordWebhook {
-    param([string]$Url, [string]$Body, [int]$MaxTry = 5)
-    $backoff = @(2, 5, 10, 20)
-    for ($try = 1; $try -le $MaxTry; $try++) {
-        try {
-            Invoke-RestMethod -Uri $Url -Method Post -ContentType 'application/json; charset=utf-8' -Body $Body | Out-Null
-            if ($try -gt 1) { Debug-Print "✅ 再送で送信できました ($try 回目)" }
-            return $true
-        } catch {
-            $status = 0
-            if ($_.Exception.Response) { try { $status = [int]$_.Exception.Response.StatusCode } catch {} }
-            $detail = $_.ErrorDetails.Message
-            # PowerShell 5.1 ではエラー応答の本文が入らないことがあるので、直接読む
-            if (-not $detail -and $_.Exception.Response) {
-                try {
-                    $reader = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
-                    $detail = $reader.ReadToEnd()
-                    $reader.Dispose()
-                } catch {}
-            }
-            if (-not $detail) { $detail = $_.Exception.Message }
 
-            if ($status -eq 429) {
-                $wait = 0
-                try { $wait = [double]($detail | ConvertFrom-Json).retry_after } catch {}
-                if ($wait -le 0) { try { $wait = [double]$_.Exception.Response.Headers["Retry-After"] } catch {} }
-                if ($wait -le 0) { $wait = 5 }
-                $wait = [math]::Min([math]::Ceiling($wait) + 1, 60)
-            } elseif ($status -eq 0 -or $status -ge 500) {
-                $wait = $backoff[[math]::Min($try - 1, $backoff.Count - 1)]
-            } else {
-                Debug-Print "❌ 送信に失敗しました ($status): $detail"
-                return $false
-            }
-
-            if ($try -ge $MaxTry) {
-                Debug-Print "❌ $MaxTry 回送っても失敗しました ($status): $detail"
-                return $false
-            }
-            Debug-Print "…送信に失敗しました ($status)。$wait 秒後に再送します ($try/$MaxTry)"
-            Start-Sleep -Seconds $wait
-        }
-    }
-    return $false
-}
 
 $content = $message
 if ($mention) {
@@ -740,4 +923,73 @@ $payload = @{
     content    = $content
 } | ConvertTo-Json -Depth 5 -Compress
 
-if (-not (Send-DiscordWebhook -Url $targetWebhook -Body $payload)) { exit 1 }
+
+
+# 録画終了のみ、共有サムネイル (メイン処理で全ターゲット分を1回だけ生成) を添付して送信する
+# 生成できていない場合や、このターゲットでサムネイル無効の場合は通常のテキスト送信にフォールバック
+$sent = $false
+if ($mode -eq 'PostRecEnd' -and $ENABLE_REC_THUMBNAIL -and $SharedThumbPath) {
+    # 画像は embed で表示する (添付ファイル名 thumbnail.jpg を attachment:// で参照)
+    $embedPayload = @{
+        username   = $DISCORD_USERNAME
+        avatar_url = $DISCORD_AVATAR
+        content    = $content
+        embeds     = @(@{ color = 0x5B7C99; image = @{ url = 'attachment://thumbnail.jpg' } })
+    } | ConvertTo-Json -Depth 5 -Compress
+    $sent = Send-DiscordWebhookWithFile -Url $targetWebhook -Body $embedPayload -FilePath $SharedThumbPath
+    if (-not $sent) { Debug-Print "⚠️ 画像付き送信に失敗したので、テキストのみで送信します" }
+}
+if (-not $sent) {
+    if (-not (Send-DiscordWebhook -Url $targetWebhook -Body $payload)) { return 'fail' }
+}
+return 'ok'
+
+}
+
+# =========================
+# メイン処理
+# =========================
+$mode = $args[0]
+if (-not $mode) { exit }
+
+$eligibleTargets = @($NotifierTargets | Where-Object { -not $_.Modes -or $_.Modes -contains $mode })
+if ($eligibleTargets.Count -eq 0) { exit }
+
+# 録画終了サムネイルは、全ターゲット分をここで1回だけ生成して共有する
+# (生成に使う設定は、サムネイル有効な最初の対象ターゲットの config から取る)
+$sharedThumb = $null
+if ($mode -eq 'PostRecEnd') {
+    foreach ($t in $eligibleTargets) {
+        if (-not (Test-Path -LiteralPath $t.ConfigPath)) { continue }
+        try { $tc = Import-PowerShellDataFile -LiteralPath $t.ConfigPath } catch { continue }
+        $thumbEnabled = $tc.ENABLE_REC_THUMBNAIL
+        if ($null -eq $thumbEnabled) { $thumbEnabled = $true }
+        if (-not $thumbEnabled) { continue }
+        $ENABLE_REC_THUMBNAIL = $true
+        $FFMPEG_PATH = $tc.FFMPEG_PATH
+        if (-not $FFMPEG_PATH) { $FFMPEG_PATH = 'C:\ffmpeg\ffmpeg.exe' }
+        $THUMB_COLS = $tc.THUMB_COLS
+        if (-not $THUMB_COLS) { $THUMB_COLS = 6 }
+        $THUMB_ROWS = $tc.THUMB_ROWS
+        if (-not $THUMB_ROWS) { $THUMB_ROWS = 6 }
+        $script:TargetName = $t.Name
+        $sharedThumb = New-RecThumbnail -TsPath (Get-Env FilePath)
+        break
+    }
+}
+
+$anyFail = $false
+foreach ($t in $eligibleTargets) {
+    $script:TargetName = $t.Name
+    try {
+        $r = Invoke-NotifierTarget -ConfigPath $t.ConfigPath -SharedThumbPath $sharedThumb | Select-Object -Last 1
+    } catch {
+        Debug-Print "❌ 処理中に例外が発生しました: $($_.Exception.Message)"
+        $r = 'fail'
+    }
+    if ($r -eq 'fail') { $anyFail = $true }
+}
+$script:TargetName = $null
+
+if ($sharedThumb) { Remove-Item -LiteralPath $sharedThumb -Force -ErrorAction SilentlyContinue }
+if ($anyFail) { exit 1 }

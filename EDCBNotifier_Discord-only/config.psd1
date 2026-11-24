@@ -33,6 +33,15 @@ ENABLE_ERROR_MENTION = $true
 # 例 MENTION_ID = "<@DiscordのユーザーID>"
 MENTION_ID = "<@>"
 
+# --- サムネイル設定 ---
+# 録画終了通知に、録画TSから生成したタイル画像 (等間隔サンプリング) を添付する
+ENABLE_REC_THUMBNAIL = $true
+# サムネイル生成に使う ffmpeg.exe のパス
+FFMPEG_PATH = "C:\ffmpeg\ffmpeg.exe"
+# タイルの列数と行数の最大値 (録画時間に応じて 2x2〜この範囲で自動調整される)
+THUMB_COLS = 2
+THUMB_ROWS = 2
+
 
 # --- フィルター設定 ---
 # 実行フィルタ
