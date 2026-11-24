@@ -457,13 +457,15 @@ function New-RecThumbnail {
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardError = $true
         $proc = [Diagnostics.Process]::Start($psi)
+        # stderr は非同期で読み捨てる (溜めるとパイプが詰まって ffmpeg が止まる)
+        $errRead = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit(60000)) {
             try { $proc.Kill() } catch {}
             Debug-Print "⚠️ サムネイル: ffmpeg がタイムアウトしました"
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
             return $null
         }
-        $proc.StandardError.ReadToEnd() | Out-Null
+        try { $errRead.Wait(3000) | Out-Null } catch {}
         if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $tmp) -or (Get-Item -LiteralPath $tmp).Length -le 0) {
             Debug-Print "⚠️ サムネイル: ffmpeg の生成に失敗しました (ExitCode: $($proc.ExitCode))"
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
